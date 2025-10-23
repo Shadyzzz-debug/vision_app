@@ -1,12 +1,12 @@
 import streamlit as st
 import base64
 import json
+import requests # Requerido para la llamada HTTP
 import time
 
 # --- Configuraciones del LLM para el entorno ---
-# Usamos la API de Gemini (disponible internamente) para la generación de respuestas.
 GEMINI_CHAT_MODEL = "gemini-2.5-flash-preview-09-2025" 
-API_KEY = "" # Clave dejada vacía para que sea provista por el entorno de Canvas
+# La clave se leerá desde el input.
 
 # --- CSS GÓTICO (Paleta Arcano-Escarlata) ---
 gothic_css = """
@@ -93,17 +93,19 @@ div[data-testid="stMarkdownContainer"] {
 st.markdown(gothic_css, unsafe_allow_html=True)
 
 
-# --- Funciones de Utilidad (Uso de st.legacy_fetch para la API de Gemini) ---
+# --- Funciones de Utilidad (Uso de 'requests' para la API de Gemini) ---
 
-def safe_fetch(url, method='POST', headers=None, body=None, max_retries=3, delay=1):
-    """Realiza llamadas a la API con reintentos y retroceso exponencial usando st.legacy_fetch."""
+def safe_fetch_request(url, api_key, method='POST', headers=None, body=None, max_retries=3, delay=1):
+    """Realiza llamadas a la API con reintentos y retroceso exponencial usando 'requests'."""
     if headers is None:
         headers = {'Content-Type': 'application/json'}
     
+    # Agregar la clave API a la URL
+    url_with_key = f"{url}?key={api_key}"
+    
     for attempt in range(max_retries):
         try:
-            # Usar st.legacy_fetch (síncrona)
-            response = st.legacy_fetch(url, method=method, headers=headers, body=body)
+            response = requests.request(method, url_with_key, headers=headers, data=body, timeout=30)
             
             if response.status_code == 200:
                 return response.json()
@@ -112,7 +114,12 @@ def safe_fetch(url, method='POST', headers=None, body=None, max_retries=3, delay
                 continue
             else:
                 error_detail = response.text if response.text else f"Código de estado: {response.status_code}"
-                raise Exception(f"Fallo en la llamada a la API. {error_detail}")
+                raise Exception(f"Fallo en la llamada a la API ({response.status_code}). {error_detail}")
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(delay * (2 ** attempt))
+                continue
+            raise Exception(f"Error de red/conexión: {e}")
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(delay * (2 ** attempt))
@@ -121,7 +128,7 @@ def safe_fetch(url, method='POST', headers=None, body=None, max_retries=3, delay
     raise Exception("Llamada a la API fallida después de múltiples reintentos.")
 
 
-def get_gemini_vision_answer(base64_image: str, mime_type: str, user_prompt: str) -> str:
+def get_gemini_vision_answer(base64_image: str, mime_type: str, user_prompt: str, api_key: str) -> str:
     """Invoca la API de Gemini para análisis de visión."""
     
     # Construcción del payload
@@ -142,9 +149,9 @@ def get_gemini_vision_answer(base64_image: str, mime_type: str, user_prompt: str
         ]
     }
     
-    apiUrl = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_CHAT_MODEL}:generateContent?key={API_KEY}"
+    apiUrl = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_CHAT_MODEL}:generateContent"
 
-    response_data = safe_fetch(apiUrl, body=json.dumps(payload))
+    response_data = safe_fetch_request(apiUrl, api_key, body=json.dumps(payload))
     
     # Manejo de la respuesta
     candidate = response_data.get('candidates', [{}])[0]
@@ -158,72 +165,71 @@ def get_gemini_vision_answer(base64_image: str, mime_type: str, user_prompt: str
     raise Exception(f"Fallo de la Visión Arcana: {error_message}")
 
 
-# --- Streamlit App Setup ---
+# Function to encode the image to base64
+def encode_image(image_file):
+    return base64.b64encode(image_file.getvalue()).decode("utf-8")
 
-# La clave de API de OpenAI es reemplazada por el Sello Arcano de acceso
-st.title("👁️ El Ojo del Arcano: Análisis de Reliquias Visuales")
+
+# --- Streamlit App Setup ---
+st.set_page_config(page_title="El Ojo del Arcano", layout="centered", initial_sidebar_state="collapsed")
+st.title("👁️ El Ojo del Arcano: Visión de Reliquias")
 st.markdown("---")
 
 # Input para la API Key (Sello Arcano)
-ke = st.text_input('Ingresa el Sello Arcano (Clave API)', type="password", key="api_key_input")
-# NOTE: En este entorno simulado, si 'ke' se proporciona, se asume que se usa para 'API_KEY'. 
-# Para la llamada real a Gemini en Canvas, la variable `API_KEY` se dejará vacía.
-if ke:
-    pass # Simulamos que la clave se aplica al entorno.
-else:
+ke = st.text_input('Ingresa el Sello Arcano (Clave API)', type="password", key="api_key_upload_input")
+if not ke:
     st.info("Introduce el Sello Arcano para dotar de Visión al Ojo.")
 
 
-# File uploader (Reliquia Visual)
-uploaded_file = st.file_uploader("Consagra la Reliquia Visual (Carga una imagen)", type=["jpg", "png", "jpeg"])
+# File uploader allows user to add their own image
+uploaded_file = st.file_uploader("Consagrar la Reliquia Visual (Subir Imagen)", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
     # Display the uploaded image
-    with st.expander("Reliquia Consagrada", expanded = True):
-        st.image(uploaded_file, caption=f"Reliquia: {uploaded_file.name}", use_container_width=True)
+    st.subheader("Reliquia Consagrada")
+    st.image(uploaded_file, caption=uploaded_file.name, use_container_width=True)
 
-# Toggle para la pregunta específica (Invocación de Contexto)
-show_details = st.toggle("Invocar Contexto Específico", value=False)
+# Toggle for showing additional details input
+show_details = st.toggle("Invocar Profundización de Análisis", value=False)
 
 additional_details = ""
 if show_details:
-    # Text input para detalles adicionales
+    # Text input for additional details about the image, shown only if toggle is True
     additional_details = st.text_area(
-        "Dicta la Pregunta Específica (Contexto de la Reliquia):",
-        placeholder="Ej: Describe la arquitectura del edificio en el centro de esta reliquia...",
+        "Dicta la Pregunta Específica sobre la Reliquia:",
+        placeholder="Ej: Describe la arquitectura de este templo antiguo con detalle arcano.",
         disabled=not show_details,
-        key="context_area"
+        key="context_area_upload"
     )
 
-# Button to trigger the analysis (Apertura del Ojo)
-analyze_button = st.button("Abre el Ojo del Arcano (Analizar)", type="secondary")
+# Button to trigger the analysis
+analyze_button = st.button("Abre el Ojo del Arcano (Analizar Reliquia)", type="secondary")
 
-# Check if conditions are met
+# Check if an image has been uploaded, if the API key is available, and if the button has been pressed
 if uploaded_file is not None and analyze_button:
-    # El Sello Arcano (ke) no es estrictamente necesario si el Canvas provee la API Key,
-    # pero advertimos si el usuario no la ingresó.
+    
     if not ke:
         st.warning("El Sello Arcano es obligatorio para invocar la Visión. Por favor, ingrésalo.")
         st.stop()
-        
-    with st.spinner("El Ojo del Arcano se está abriendo..."):
+
+    with st.spinner("El Ojo del Arcano está interpretando los grabados dimensionales..."):
         try:
             # 1. Preparar la Reliquia (Codificación Base64)
-            file_bytes = uploaded_file.getvalue()
-            base64_image = base64.b64encode(file_bytes).decode("utf-8")
-            mime_type = uploaded_file.type
+            # Rebobinar el archivo antes de codificarlo
+            uploaded_file.seek(0)
+            base64_image = encode_image(uploaded_file)
+            mime_type = uploaded_file.type # Usar el tipo de archivo original
 
             # 2. Construir el Conjuro (Prompt)
-            prompt_text = "Describe detalladamente lo que observas en esta imagen. Responde en español y mantén un tono solemne y descriptivo."
+            prompt_text = ("Describe lo que ves en esta reliquia visual (imagen) en español, con un tono solemne y formal.")
             
             if show_details and additional_details:
                 prompt_text += (
-                    f"\n\n**CONTEXTO ESPECÍFICO INVOCADO:** {additional_details}"
+                    f"\n\n**INSTRUCCIÓN DE PROFUNDIZACIÓN INVOCADA:** {additional_details}"
                 )
             
             # 3. Invocar la Visión
-            # Usamos una función simple en lugar de streaming para simplificar el reemplazo
-            response = get_gemini_vision_answer(base64_image, mime_type, prompt_text)
+            response = get_gemini_vision_answer(base64_image, mime_type, prompt_text, ke)
             
             # 4. Mostrar la Revelación
             st.markdown("### 📜 La Revelación del Oráculo:")
@@ -233,7 +239,6 @@ if uploaded_file is not None and analyze_button:
             st.error(f"Fallo en la Invocación. El Ojo no pudo abrirse: {e}")
             
 else:
-    # Mensajes de estado
-    if analyze_button:
-        if not uploaded_file:
-            st.warning("Consagra primero una Reliquia Visual (carga una imagen).")
+    # Advertencia si falta la imagen y se presiona el botón
+    if uploaded_file is None and analyze_button:
+        st.warning("Por favor, consagra una Reliquia Visual para su análisis.")
